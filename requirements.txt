@@ -4,6 +4,6 @@ torchvision>=0.14.0
 tqdm
 numpy
 albumentations==0.4.3
-opencv-python
+opencv-python==4.9.0
 segmentation_models_pytorch
 click==8.1.7

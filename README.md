@@ -8,6 +8,10 @@ DeepLabV3Plus model is currently been used.
 Basically, it's just few short scripts to train this model and examine how it works, but it may be usefull as a start
 for more advanced projects.
 
+Here it is how results look like:
+
+![Sample](./output/sample.gif)
+
 ## Requirements
 
 Linux (Ubuntu 22 or whatever), NVIDIA CUDA 11.x

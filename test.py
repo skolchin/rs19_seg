@@ -11,10 +11,12 @@ from pathlib import Path
 
 from dataset import RailSem19Dataset
 
+FOURCC = cv2.VideoWriter_fourcc(*"vp09")
+
 def get_vis_augmentation():
     transform = [
-        A.LongestMaxSize(1024, cv2.INTER_AREA),
-        A.PadIfNeeded(1024, 1024),
+        A.LongestMaxSize(720, cv2.INTER_AREA),
+        A.PadIfNeeded(720, 720, cv2.BORDER_CONSTANT),
     ]
     return A.Compose(transform)
 
@@ -58,6 +60,9 @@ def process_frame(image, model, dataset, display_classes, device, threshold):
 @click.option('-d', '--data_dir', 
               type=click.Path(exists=True, file_okay=False, dir_okay=True), default='./data/rs19_val/',
               help='Location of the RS19 dataset')
+@click.option('-o', '--output', 
+              type=click.Path(exists=False, file_okay=True, writable=True),
+              help='Save result to file')
 @click.option('-t', '--threshold', type=click.FloatRange(0.1, 1.0), default=0.8,
               help='Confidence threshold')
 @click.option('-f', '--filter', 'class_filter',
@@ -65,9 +70,9 @@ def process_frame(image, model, dataset, display_classes, device, threshold):
 @click.option('--use_cpu', is_flag=True,
               help='Run inference on CPU')
 @click.option('--labels', 'show_labels', is_flag=True,
-              help='Display RS19 labels and quit')
+              help='Display RailSem19 labels and quit')
 
-def main(image_path, video_path, data_dir, threshold, class_filter, use_cpu, show_labels):
+def main(image_path, video_path, data_dir, output, threshold, class_filter, use_cpu, show_labels):
     """Model test"""
 
     device = 'cuda' if not use_cpu else 'cpu'
@@ -123,9 +128,15 @@ def main(image_path, video_path, data_dir, threshold, class_filter, use_cpu, sho
         cv2.imshow(f'{image_path}', stacked_image)
         cv2.imshow('Legend', legend)
         cv2.waitKey(0)
+
+        if output:
+            cv2.imwrite(output, stacked_frame)
+            print(f'Image saved to {output}')
     else:
-        video = cv2.VideoCapture(video_path)
-        while (buf := video.read()) is not None and buf[0]:
+        stream = cv2.VideoCapture(video_path)
+        output_stream = None
+
+        while (buf := stream.read()) is not None and buf[0]:
             _, frame = buf
             aug_frame, output_frame = process_frame(frame, best_model, dataset, display_classes, device, threshold)
             aug_frame = cv2.cvtColor(aug_frame, cv2.COLOR_RGB2BGR)
@@ -134,7 +145,14 @@ def main(image_path, video_path, data_dir, threshold, class_filter, use_cpu, sho
             output_frame[y:y+h, x:x+w] = cv2.addWeighted(output_frame[y:y+h, x:x+w], 0.2, legend, 0.8, 0.0)
             stacked_frame = np.hstack((aug_frame, output_frame))
 
-            cv2.imshow(f'{video_path}', stacked_frame)
+            cv2.imshow(f'{video_path}: press q to quit, space to pause', stacked_frame)
+            if output:
+                if output_stream is None:
+                    output_fps = round(stream.get(cv2.CAP_PROP_FPS), 0)
+                    output_stream = cv2.VideoWriter(output, FOURCC, output_fps,
+                                                    tuple(reversed(stacked_frame.shape[:2])))
+                output_stream.write(stacked_frame)
+            
             match cv2.waitKey(1) & 0xFF:
                 case 113:   # q
                     break
@@ -142,6 +160,10 @@ def main(image_path, video_path, data_dir, threshold, class_filter, use_cpu, sho
                 case 32:    # space
                     while cv2.waitKey(10) & 0xFF != 32:
                         continue
+
+        if output_stream is not None:
+            output_stream.release()
+            print(f'Video saved to {output}')
 
     cv2.destroyAllWindows()
 
