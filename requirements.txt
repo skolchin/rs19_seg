@@ -1,0 +1,9 @@
+--extra-index-url https://pypi.ngc.nvidia.com
+torch==1.13.0
+torchvision>=0.14.0
+tqdm
+numpy
+albumentations==0.4.3
+opencv-python
+segmentation_models_pytorch
+click==8.1.7

@@ -1,0 +1,7 @@
+data/
+.venv/
+.vscode/
+__pycache__/
+*.mp4
+*.mkv
+*.pth
