@@ -30,7 +30,47 @@ def get_preprocessing(preprocessing_fn=None):
     transform.append(A.Lambda(image=to_tensor, mask=to_tensor))
     return A.Compose(transform)
 
-def process_frame(image, model, dataset, display_classes, device, threshold):
+def find_intersection(pred_mask, dataset, threshold, base_class='rail-raised', intersect_class='terrain'):
+    ch = dataset.classes[base_class]['dim']
+    base_mask = pred_mask[:,:, ch].squeeze()
+    base_mask = np.where(base_mask >= threshold, 255, 0).astype('uint8')
+
+    x0, y0 = 0, 0
+    x1, y1 = base_mask.shape[1], int(base_mask.shape[0] * .4)
+    base_mask[y0:y1, x0:x1] = 0
+
+    x0, y0 = 0, int(base_mask.shape[0] * .9)
+    x1, y1 = base_mask.shape[1], base_mask.shape[0]
+    base_mask[y0:y1, x0:x1] = 0
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    base_mask = cv2.morphologyEx(base_mask, cv2.MORPH_OPEN, kernel, iterations=3)
+
+    contours, _ = cv2.findContours(base_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not len(contours):
+        return np.array([])
+
+    contours_sorted = sorted(contours, key=cv2.contourArea)
+
+    blank = np.zeros(pred_mask.shape[:2], dtype='uint8')
+    h, w = blank.shape[:2]
+    rx0, rx1 = blank.shape[1] // 6, blank.shape[1] // 2
+    deltas = ((rx0, rx1), (blank.shape[1] // 2, blank.shape[1] // 6))
+
+    for cnt, xd in zip(contours_sorted[-2:], deltas):
+        vect = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx, vy, x,y = tuple(vect.flatten())
+        lefty = int(((xd[0]-x)*vy/vx) + y)
+        righty = int(((w-xd[1]-x)*vy/vx) + y)
+        cv2.line(blank,(w-xd[1], righty),(xd[0], lefty), 1, 10)
+
+    ch = dataset.classes[intersect_class]['dim']
+    intersect_mask = pred_mask[:,:, ch].squeeze()
+    blank = np.where(intersect_mask >= threshold, blank+1, blank)
+
+    return blank > 1
+
+def process_frame(image, model, dataset, display_classes, device, threshold, show_obstacles=False):
     orig_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     aug_image = dataset.augmentation(image=orig_image)['image']
     pp_image = dataset.preprocessing(image=aug_image)['image']
@@ -41,12 +81,17 @@ def process_frame(image, model, dataset, display_classes, device, threshold):
 
     output_image = cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR)
     for label in display_classes:
-        n_cls = dataset.class_ids[label]
-        color = dataset.classes[label]
-        m = pred_mask[:,:, n_cls].squeeze()
+        ch = dataset.classes[label]['dim']
+        color = dataset.classes[label]['color']
+        m = pred_mask[:,:, ch].squeeze()
         m_idx = m >= threshold
-        for ch in range(3):
-            output_image[m_idx,ch] = output_image[m_idx,ch]*0.6 + color[ch]*0.4
+        output_image[m_idx] = output_image[m_idx]*0.6 + np.array(color)*0.4
+
+    if show_obstacles:
+        intersect_mask = find_intersection(pred_mask, dataset, threshold)
+        if intersect_mask.size > 0:
+            (y,x), r = cv2.minEnclosingCircle(np.argwhere(intersect_mask))
+            cv2.circle(output_image, (int(x), int(y)), int(r), (0,0,255), 2)
 
     return aug_image, output_image
 
@@ -67,13 +112,12 @@ def process_frame(image, model, dataset, display_classes, device, threshold):
               help='Confidence threshold')
 @click.option('-f', '--filter', 'class_filter',
               help='Class filter (list of regex expressions separated by comma)')
-@click.option('--use_cpu', is_flag=True,
-              help='Run inference on CPU')
-@click.option('--labels', 'show_labels', is_flag=True,
-              help='Display RailSem19 labels and quit')
-
-def main(image_path, video_path, data_dir, output, threshold, class_filter, use_cpu, show_labels):
-    """Model test"""
+@click.option('--use_cpu', is_flag=True, help='Run inference on CPU')
+@click.option('--labels', 'show_labels', is_flag=True, help='Display RailSem19 dataset labels and quit')
+@click.option('-x', '--obstacle', 'show_obstacles', is_flag=True, 
+              help='Find and highlight obstacles on railway (images only)')
+def main(image_path, video_path, data_dir, output, threshold, class_filter, use_cpu, show_labels, show_obstacles):
+    """ Model test """
 
     device = 'cuda' if not use_cpu else 'cpu'
     images_dir = str(Path(data_dir).joinpath('jpgs', 'rs19_val'))
@@ -90,9 +134,9 @@ def main(image_path, video_path, data_dir, output, threshold, class_filter, use_
         preprocessing = get_preprocessing(preprocessing_fn)
     )
     if show_labels:
-        print(f'RS19 labels:')
-        for id, label in zip(dataset.class_ids.values(), dataset.classes):
-            print(f'{id}: {label}')
+        print(f'RS19 labels:\n---')
+        for label, item in dataset.classes.items():
+            print(f'{item["id"]}: {label}')
         return
     
     best_model = torch.load('./weights/rs19_deeplabv3plus.pth')
@@ -108,29 +152,36 @@ def main(image_path, video_path, data_dir, output, threshold, class_filter, use_
                     display_classes.append(cls)
                     break
 
-    legend = np.full((len(display_classes)*15, 200, 3), (255,255,255), dtype=np.uint8)
+    legend = np.full(((len(display_classes) + int(show_obstacles))*14 + 6, 200, 3), (255,255,255), dtype=np.uint8)
     xt, yt = 5, 5
     for label in display_classes:
-        n_cls = dataset.class_ids[label]
-        color = dataset.classes[label]
+        cls_id = dataset.classes[label]['id']
+        color = dataset.classes[label]['color']
         cv2.rectangle(legend, (xt, yt), (xt+10, yt+10), color, -1)
-        cv2.putText(legend, f'{n_cls}: {label}',(xt+13, yt+9), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+        cv2.putText(legend, f'{cls_id}: {label}',(xt+13, yt+9), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
         yt += 14
 
     if not video_path:
         if (image := cv2.imread(image_path)) is None:
             raise Exception(f'Cannot open image file {image_path}')
 
-        aug_image, output_image = process_frame(image, best_model, dataset, display_classes, device, threshold)
+        if show_obstacles:
+            cv2.rectangle(legend, (xt, yt), (xt+10, yt+10), (0,0,255), -1)
+            cv2.putText(legend, 'obstacles',(xt+13, yt+9), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+
+        aug_image, output_image = process_frame(image, best_model, dataset, display_classes, device, threshold, show_obstacles)
+
+        x, y, w, h = 0, 0, legend.shape[1], legend.shape[0]
+        output_image[y:y+h, x:x+w] = cv2.addWeighted(output_image[y:y+h, x:x+w], 0.2, legend, 0.8, 0.0)
+
         aug_image = cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR)
         stacked_image = np.hstack((aug_image, output_image))
 
         cv2.imshow(f'{image_path}', stacked_image)
-        cv2.imshow('Legend', legend)
         cv2.waitKey(0)
 
         if output:
-            cv2.imwrite(output, stacked_frame)
+            cv2.imwrite(output, stacked_image)
             print(f'Image saved to {output}')
     else:
         stream = cv2.VideoCapture(video_path)

@@ -24,12 +24,12 @@ MIN_SCORE_CHANGE = 1e-3
 APPLY_LR_DECAY_EPOCH = 30
 
 def get_training_augmentation():
-    train_transform = [    
+    transform = [    
         A.RandomCrop(height=16*23, width=16*40, always_apply=True),
         A.HorizontalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.2),
     ]
-    return A.Compose(train_transform)
+    return A.Compose(transform)
 
 def to_tensor(x, **kwargs):
     return x.transpose(2, 0, 1).astype('float32')

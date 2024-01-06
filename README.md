@@ -8,13 +8,18 @@ DeepLabV3Plus model is currently been used.
 Basically, it's just few short scripts to train this model and examine how it works, but it may be usefull as a start
 for more advanced projects.
 
-Here it is how results look like:
+Here is how video processing looks like:
 
 ![Sample](./output/sample.gif)
 
+UPD: Added experimental feature to detect railway obstacles 
+(with single obstacle class and on the still images only, -x command-line option):
+
+![Obstacle](./output/sample_obstacle.png)
+
 ## Requirements
 
-Linux (Ubuntu 22 or whatever), NVIDIA CUDA 11.x
+Linux (Ubuntu 22 or whatever), NVIDIA CUDA 11.x.
 
 If there are other CUDA versions installed, check for compatible PyTorch version and correct `requirements.txt`.
 
