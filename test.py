@@ -4,6 +4,7 @@ import re
 import cv2
 import torch
 import click
+import warnings
 import numpy as np
 import albumentations as A
 import segmentation_models_pytorch as smp
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from dataset import RailSem19Dataset
 
+warnings.simplefilter('ignore', UserWarning)
 FOURCC = cv2.VideoWriter_fourcc(*"vp09")
 
 def get_vis_augmentation():
@@ -30,45 +32,52 @@ def get_preprocessing(preprocessing_fn=None):
     transform.append(A.Lambda(image=to_tensor, mask=to_tensor))
     return A.Compose(transform)
 
-def find_intersection(pred_mask, dataset, threshold, base_class='rail-raised', intersect_class='terrain'):
+def find_obstacles(pred_mask, dataset, lower_threshold, output_image=None, base_class='rail-raised'):
+
+    upper_threshold = 0.9
+
     ch = dataset.classes[base_class]['dim']
-    base_mask = pred_mask[:,:, ch].squeeze()
-    base_mask = np.where(base_mask >= threshold, 255, 0).astype('uint8')
+    pred = pred_mask[:,:, ch].squeeze()
 
-    x0, y0 = 0, 0
-    x1, y1 = base_mask.shape[1], int(base_mask.shape[0] * .4)
-    base_mask[y0:y1, x0:x1] = 0
+    vp = ((0, int(pred.shape[0] * .4)), (pred.shape[1], int(pred.shape[0] * .9)))
+    vp_mask = np.ones(pred.shape, dtype=bool)
+    vp_mask[vp[0][1]:vp[1][1], vp[0][0]:vp[1][0]] = False
 
-    x0, y0 = 0, int(base_mask.shape[0] * .9)
-    x1, y1 = base_mask.shape[1], base_mask.shape[0]
-    base_mask[y0:y1, x0:x1] = 0
+    base_mask = np.where(pred >= upper_threshold, 255, 0).astype('uint8')
+    base_mask[ vp_mask ] = 0
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     base_mask = cv2.morphologyEx(base_mask, cv2.MORPH_OPEN, kernel, iterations=3)
 
     contours, _ = cv2.findContours(base_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not len(contours):
-        return np.array([])
-
     contours_sorted = sorted(contours, key=cv2.contourArea)
 
-    blank = np.zeros(pred_mask.shape[:2], dtype='uint8')
-    h, w = blank.shape[:2]
-    rx0, rx1 = blank.shape[1] // 6, blank.shape[1] // 2
-    deltas = ((rx0, rx1), (blank.shape[1] // 2, blank.shape[1] // 6))
+    obstacle_mask = np.zeros(output_image.shape[:2], bool)
+    for cnt in contours_sorted[-2:]:
+        vect = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        intercept = np.rint(vect[-2:]).astype('int')
+        slope = vect[1] / vect[0]
 
-    for cnt, xd in zip(contours_sorted[-2:], deltas):
-        vect = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
-        vx, vy, x,y = tuple(vect.flatten())
-        lefty = int(((xd[0]-x)*vy/vx) + y)
-        righty = int(((w-xd[1]-x)*vy/vx) + y)
-        cv2.line(blank,(w-xd[1], righty),(xd[0], lefty), 1, 10)
+        sy = vp[1][1]
+        sx = intercept[0] + int( (sy - intercept[1]) / slope)
+        fy = int(output_image.shape[0] * 0.32)
+        fx = intercept[0] + int( (fy - intercept[1]) / slope)
 
-    ch = dataset.classes[intersect_class]['dim']
-    intersect_mask = pred_mask[:,:, ch].squeeze()
-    blank = np.where(intersect_mask >= threshold, blank+1, blank)
+        # cv2.circle(output_image, (sx, sy), 5, (0,0,255), -1)
+        # cv2.circle(output_image, (fx, fy), 5, (0,0,255), -1)
+        # cv2.line(output_image, (sx,sy), (fx,fy), (0,0,255), 2)
 
-    return blank > 1
+        dy = np.arange(fy, sy, 1, dtype='int')
+        dx = intercept[0] + ((dy - intercept[1]) // slope).astype('int')
+        obstacle_mask[dy,dx] = np.where(pred[dy,dx] <= lower_threshold, True, False)
+
+    if output_image is None:
+        return obstacle_mask
+    else:
+        (y,x), r = cv2.minEnclosingCircle(np.argwhere(obstacle_mask))
+        if r:
+            cv2.circle(output_image, (int(x), int(y)), int(r), (0,0,255), 2)
+        return output_image
 
 def process_frame(image, model, dataset, display_classes, device, threshold, show_obstacles=False):
     orig_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -88,10 +97,7 @@ def process_frame(image, model, dataset, display_classes, device, threshold, sho
         output_image[m_idx] = output_image[m_idx]*0.6 + np.array(color)*0.4
 
     if show_obstacles:
-        intersect_mask = find_intersection(pred_mask, dataset, threshold)
-        if intersect_mask.size > 0:
-            (y,x), r = cv2.minEnclosingCircle(np.argwhere(intersect_mask))
-            cv2.circle(output_image, (int(x), int(y)), int(r), (0,0,255), 2)
+        find_obstacles(pred_mask, dataset, threshold, output_image=output_image)
 
     return aug_image, output_image
 
